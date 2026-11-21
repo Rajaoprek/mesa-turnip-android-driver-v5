@@ -1,0 +1,123 @@
+name: Build Turnip AHB V5 - Galaxy S9
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            python3 python3-pip python3-venv \
+            pkg-config build-essential \
+            cmake ninja-build git curl unzip
+
+          python3 -m pip install --user \
+            meson mako packaging pyyaml
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: |
+          sdkmanager "ndk;28.2.13676358"
+
+      - name: Download Mesa source
+        run: |
+          curl -fL --retry 3 \
+            https://archive.mesa3d.org/mesa-26.3.1.tar.xz \
+            -o mesa.tar.xz
+          mkdir mesa-src
+          tar -xJf mesa.tar.xz \
+            -C mesa-src --strip-components=1
+
+      - name: Download validated AHB V5 patch
+        uses: actions/download-artifact@v4
+        with:
+          name: mesa-ahb-v5-patched-source
+          repository: Rajaoprek/mesa-turnip-android-driver-v5
+          run-id: 44938010677
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: patch-artifact
+
+      - name: Apply AHB V5 patch
+        run: |
+          set -euxo pipefail
+          test -s patch-artifact/ahb-v5.patch
+          cd mesa-src
+          git init -q
+          git add .
+          git -c user.name=CI \
+              -c user.email=ci@example.com \
+              commit -qm baseline
+          git apply --check ../patch-artifact/ahb-v5.patch
+          git apply ../patch-artifact/ahb-v5.patch
+          git diff --check
+
+      - name: Configure Android ARM64
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          NDK="$ANDROID_SDK_ROOT/ndk/28.2.13676358"
+          TOOL="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+
+          cat > android-aarch64.ini <<EOF
+          [binaries]
+          ar = '$TOOL/llvm-ar'
+          c = '$TOOL/aarch64-linux-android29-clang'
+          cpp = ['$TOOL/aarch64-linux-android29-clang++', '-fno-exceptions', '-fno-unwind-tables', '-fno-asynchronous-unwind-tables', '-static-libstdc++']
+          strip = '$TOOL/llvm-strip'
+          pkg-config = ['/usr/bin/pkg-config']
+
+          [host_machine]
+          system = 'android'
+          cpu_family = 'aarch64'
+          cpu = 'armv8'
+          endian = 'little'
+          EOF
+
+      - name: Configure Mesa
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+
+          meson setup build-android-aarch64 mesa-src \
+            --cross-file android-aarch64.ini \
+            -Dplatforms=android \
+            -Dplatform-sdk-version=29 \
+            -Dandroid-stub=true \
+            -Dandroid-libbacktrace=disabled \
+            -Degl=disabled \
+            -Dgallium-drivers= \
+            -Dvulkan-drivers=freedreno \
+            -Dfreedreno-kmds=kgsl \
+            -Dbuildtype=release \
+            -Dstrip=true \
+            -Dcpp_rtti=false
+
+      - name: Compile Turnip
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          meson compile -C build-android-aarch64
+
+      - name: Locate driver
+        run: |
+          find build-android-aarch64 \
+            -name 'libvulkan_freedreno.so' -type f
+
+      - name: Upload ARM64 driver
+        uses: actions/upload-artifact@v4
+        with:
+          name: turnip-ahb-v5-galaxy-s9-arm64
+          path: build-android-aarch64/src/freedreno/vulkan/libvulkan_freedreno.so
+          if-no-files-found: error
+          retention-days: 7
