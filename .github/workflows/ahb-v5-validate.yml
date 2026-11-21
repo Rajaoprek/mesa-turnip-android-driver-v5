@@ -1,0 +1,53 @@
+name: AHB V5 Patch Validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Mesa 26.3.1
+        run: |
+          curl -fL --retry 3 \
+            https://archive.mesa3d.org/mesa-26.3.1.tar.xz \
+            -o mesa.tar.xz
+          xz -t mesa.tar.xz
+
+      - name: Extract source
+        run: |
+          mkdir mesa-src
+          tar -xJf mesa.tar.xz \
+            -C mesa-src --strip-components=1
+
+      - name: Validate patch
+        run: |
+          cd mesa-src
+          git init -q
+          git add .
+          git -c user.name=CI \
+              -c user.email=ci@example.com \
+              commit -qm baseline
+
+          git apply --check \
+            ../patches/mesa-26.3.1-ahb-guard-v5.patch
+
+          git apply \
+            ../patches/mesa-26.3.1-ahb-guard-v5.patch
+
+          git diff --check
+
+      - name: Upload patched source
+        uses: actions/upload-artifact@v4
+        with:
+          name: mesa-ahb-v5-patched-source
+          path: mesa-src/src/
+          retention-days: 7
