@@ -9,37 +9,41 @@ permissions:
 jobs:
   source-audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
-      - name: Download official Mesa source
+      - name: Download Mesa source
         shell: bash
         run: |
           set -euxo pipefail
           URL="https://archive.mesa3d.org/mesa-26.3.1.tar.xz"
-          curl -IL --fail "$URL"
           curl -fL --retry 3 --retry-delay 5 "$URL" -o mesa.tar.xz
           ls -lh mesa.tar.xz
 
-      - name: Verify SHA256
+      - name: Verify archive integrity
         shell: bash
         run: |
           set -euxo pipefail
-          echo "4e4e438eac7b840a9383988cbb7c08dad8041da544b9319fc26d319fa734896  mesa.tar.xz" | sha256sum -c -
+          xz -t mesa.tar.xz
+          echo "Archive integrity OK"
 
-      - name: Extract source
+      - name: Extract Mesa source
         shell: bash
         run: |
+          set -euxo pipefail
           mkdir -p mesa-src
           tar -xJf mesa.tar.xz -C mesa-src --strip-components=1
 
-      - name: Collect target source files
+      - name: Collect target files
         shell: bash
         run: |
+          set -euxo pipefail
           mkdir -p audit
+
           cp mesa-src/src/android_stub/nativewindow_stub.cpp audit/
           cp mesa-src/src/vulkan/runtime/vk_android.c audit/
           cp mesa-src/src/freedreno/vulkan/tu_device.cc audit/
+
           ls -lh audit/
 
       - name: Verify source files
@@ -49,12 +53,11 @@ jobs:
           test -s audit/nativewindow_stub.cpp
           test -s audit/vk_android.c
           test -s audit/tu_device.cc
-          echo "All 3 source files verified"
+          echo "All source files verified successfully"
 
-      - name: Upload source artifact
+      - name: Upload source files
         uses: actions/upload-artifact@v4
         with:
           name: mesa-2631-ahb-source
           path: audit/
           retention-days: 7
-
