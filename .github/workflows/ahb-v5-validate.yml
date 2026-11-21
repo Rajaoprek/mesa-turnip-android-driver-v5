@@ -1,3 +1,4 @@
+
 name: AHB V5 Patch Validation
 
 on:
@@ -9,45 +10,108 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
       - name: Download Mesa 26.3.1
         run: |
+          set -euxo pipefail
           curl -fL --retry 3 \
             https://archive.mesa3d.org/mesa-26.3.1.tar.xz \
             -o mesa.tar.xz
           xz -t mesa.tar.xz
 
-      - name: Extract source
+      - name: Extract Mesa source
         run: |
           mkdir mesa-src
           tar -xJf mesa.tar.xz \
             -C mesa-src --strip-components=1
 
-      - name: Validate patch
+      - name: Create AHB V5 patch
         run: |
+          cat > ahb-v5.patch <<'PATCH'
+          diff --git a/src/freedreno/vulkan/tu_device.cc b/src/freedreno/vulkan/tu_device.cc
+          --- a/src/freedreno/vulkan/tu_device.cc
+          +++ b/src/freedreno/vulkan/tu_device.cc
+          @@ -3771,10 +3771,17 @@ tu_AllocateMemory(VkDevice _device,
+                 } else if (mem->vk.ahardware_buffer) {
+              #if DETECT_OS_ANDROID
+                 const native_handle_t *handle = AHardwareBuffer_getNativeHandle(mem->vk.ahardware_buffer);
+          -      assert(handle->numFds > 0);
+          -      size_t size = lseek(handle->data[0], 0, SEEK_END);
+          -      result = tu_bo_init_dmabuf(device, &mem->bo, size, alignment, alloc_flags,
+          -                                 handle->data[0]);
+          +      if (!handle || handle->numFds <= 0 || handle->data[0] < 0) {
+          +         result = VK_ERROR_INVALID_EXTERNAL_HANDLE;
+          +      } else {
+          +         off_t size = lseek(handle->data[0], 0, SEEK_END);
+          +         if (size <= 0) {
+          +            result = VK_ERROR_INVALID_EXTERNAL_HANDLE;
+          +         } else {
+          +            result = tu_bo_init_dmabuf(device, &mem->bo, (uint64_t) size,
+          +                                       alignment, alloc_flags, handle->data[0]);
+          +         }
+          +      }
+              #else
+                 result = VK_ERROR_FEATURE_NOT_PRESENT;
+              #endif
+          diff --git a/src/vulkan/runtime/vk_android.c b/src/vulkan/runtime/vk_android.c
+          --- a/src/vulkan/runtime/vk_android.c
+          +++ b/src/vulkan/runtime/vk_android.c
+          @@ -675,6 +675,8 @@ vk_android_get_ahb_layout(
+             AHardwareBuffer_Desc description;
+             const native_handle_t *handle =
+                AHardwareBuffer_getNativeHandle(ahardware_buffer);
+          +  if (!handle || handle->numFds <= 0 || handle->data[0] < 0)
+          +     return VK_ERROR_INVALID_EXTERNAL_HANDLE;
+          
+             AHardwareBuffer_describe(ahardware_buffer, &description);
+          
+          @@ -1251,8 +1253,13 @@ vk_common_GetAndroidHardwareBufferPropertiesANDROID(
+             }
+          
+             const native_handle_t *handle = AHardwareBuffer_getNativeHandle(buffer);
+          -  assert(handle && handle->numFds > 0);
+          -  pProperties->allocationSize = lseek(handle->data[0], 0, SEEK_END);
+          +  if (!handle || handle->numFds <= 0 || handle->data[0] < 0)
+          +     return VK_ERROR_INVALID_EXTERNAL_HANDLE;
+          +
+          +  off_t allocation_size = lseek(handle->data[0], 0, SEEK_END);
+          +  if (allocation_size <= 0)
+          +     return VK_ERROR_INVALID_EXTERNAL_HANDLE;
+          +  pProperties->allocationSize = (VkDeviceSize) allocation_size;
+          
+             VkMemoryFdPropertiesKHR fd_props = {
+          PATCH
+
+      - name: Check patch
+        run: |
+          set -euxo pipefail
           cd mesa-src
           git init -q
           git add .
           git -c user.name=CI \
               -c user.email=ci@example.com \
               commit -qm baseline
+          git apply --check ../ahb-v5.patch
 
-          git apply --check \
-            ../patches/mesa-26.3.1-ahb-guard-v5.patch
-
-          git apply \
-            ../patches/mesa-26.3.1-ahb-guard-v5.patch
-
+      - name: Apply patch
+        run: |
+          set -euxo pipefail
+          cd mesa-src
+          git apply ../ahb-v5.patch
           git diff --check
+          git diff --stat
+
+      - name: Collect patched files
+        run: |
+          mkdir -p audit
+          cp mesa-src/src/freedreno/vulkan/tu_device.cc audit/
+          cp mesa-src/src/vulkan/runtime/vk_android.c audit/
 
       - name: Upload patched source
         uses: actions/upload-artifact@v4
         with:
           name: mesa-ahb-v5-patched-source
-          path: mesa-src/src/
+          path: audit/
           retention-days: 7
