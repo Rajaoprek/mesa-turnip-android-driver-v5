@@ -13,29 +13,48 @@ jobs:
     timeout-minutes: 120
 
     steps:
-      - name: Install dependencies
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        shell: bash
         run: |
+          set -euxo pipefail
           sudo apt-get update
           sudo apt-get install -y \
             python3 python3-pip python3-venv \
-            pkg-config build-essential \
-            cmake ninja-build git curl unzip
+            pkg-config build-essential cmake ninja-build \
+            git curl unzip xz-utils flex bison file
 
           python3 -m pip install --user \
-            meson mako packaging pyyaml
+            meson mako packaging pyyaml ply
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # Java 17 harus dipasang sebelum Android SDK
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
       - name: Install Android NDK
+        shell: bash
         run: |
+          set -euxo pipefail
           sdkmanager "ndk;28.2.13676358"
 
-      - name: Download Mesa source
+      - name: Download Mesa 26.3.1
+        shell: bash
         run: |
+          set -euxo pipefail
           curl -fL --retry 3 \
             https://archive.mesa3d.org/mesa-26.3.1.tar.xz \
             -o mesa.tar.xz
+
+          xz -t mesa.tar.xz
           mkdir mesa-src
           tar -xJf mesa.tar.xz \
             -C mesa-src --strip-components=1
@@ -49,21 +68,27 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: patch-artifact
 
-      - name: Apply AHB V5 patch
+      - name: Verify and apply AHB V5 patch
+        shell: bash
         run: |
           set -euxo pipefail
+
           test -s patch-artifact/ahb-v5.patch
+
           cd mesa-src
           git init -q
           git add .
           git -c user.name=CI \
               -c user.email=ci@example.com \
               commit -qm baseline
+
           git apply --check ../patch-artifact/ahb-v5.patch
           git apply ../patch-artifact/ahb-v5.patch
-          git diff --check
 
-      - name: Configure Android ARM64
+          git diff --check
+          git diff --stat
+
+      - name: Configure Android ARM64 cross file
         shell: bash
         run: |
           set -euxo pipefail
@@ -71,24 +96,38 @@ jobs:
           NDK="$ANDROID_SDK_ROOT/ndk/28.2.13676358"
           TOOL="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
 
+          mkdir -p /tmp/empty-pkgconfig
+
           cat > android-aarch64.ini <<EOF
+          [constants]
+          ndk_path = '$NDK'
+          tool_bin = '$TOOL'
+
           [binaries]
-          ar = '$TOOL/llvm-ar'
-          c = '$TOOL/aarch64-linux-android29-clang'
-          cpp = ['$TOOL/aarch64-linux-android29-clang++', '-fno-exceptions', '-fno-unwind-tables', '-fno-asynchronous-unwind-tables', '-static-libstdc++']
-          strip = '$TOOL/llvm-strip'
-          pkg-config = ['/usr/bin/pkg-config']
+          ar = 'llvm-ar'
+          c = 'aarch64-linux-android29-clang'
+          cpp = 'aarch64-linux-android29-clang++'
+          c_ld = 'lld'
+          cpp_ld = 'lld'
+          strip = 'llvm-strip'
+          pkg-config = ['env', 'PKG_CONFIG_LIBDIR=/tmp/empty-pkgconfig', 'pkg-config']
 
           [host_machine]
           system = 'android'
           cpu_family = 'aarch64'
           cpu = 'armv8'
           endian = 'little'
+
+          [properties]
+          needs_exe_wrapper = true
           EOF
 
-      - name: Configure Mesa
+          echo "$TOOL" >> "$GITHUB_PATH"
+
+      - name: Configure Mesa Turnip
+        shell: bash
         run: |
-          export PATH="$HOME/.local/bin:$PATH"
+          set -euxo pipefail
 
           meson setup build-android-aarch64 mesa-src \
             --cross-file android-aarch64.ini \
@@ -105,19 +144,33 @@ jobs:
             -Dcpp_rtti=false
 
       - name: Compile Turnip
+        shell: bash
         run: |
-          export PATH="$HOME/.local/bin:$PATH"
+          set -euxo pipefail
           meson compile -C build-android-aarch64
 
-      - name: Locate driver
+      - name: Collect ARM64 driver
+        shell: bash
         run: |
-          find build-android-aarch64 \
-            -name 'libvulkan_freedreno.so' -type f
+          set -euxo pipefail
 
-      - name: Upload ARM64 driver
+          mkdir -p dist
+
+          find build-android-aarch64 \
+            -type f \
+            -name 'libvulkan_freedreno.so' \
+            -exec cp {} dist/ \;
+
+          test -s dist/libvulkan_freedreno.so
+
+          file dist/libvulkan_freedreno.so
+
+          llvm-readelf -h dist/libvulkan_freedreno.so
+
+      - name: Upload Turnip ARM64 artifact
         uses: actions/upload-artifact@v4
         with:
           name: turnip-ahb-v5-galaxy-s9-arm64
-          path: build-android-aarch64/src/freedreno/vulkan/libvulkan_freedreno.so
+          path: dist/libvulkan_freedreno.so
           if-no-files-found: error
           retention-days: 7
