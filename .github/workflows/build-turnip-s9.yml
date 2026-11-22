@@ -1,13 +1,7 @@
-name: Build Turnip 26.3.1 - Galaxy S9
+name: Build Turnip 26.3.1 - Galaxy S9 AHB V5
 
 on:
   workflow_dispatch:
-    inputs:
-      apply_ahb_patch:
-        description: Apply AHB V5 patch
-        required: true
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -19,7 +13,7 @@ jobs:
     timeout-minutes: 180
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Java 17
@@ -37,64 +31,32 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-
           sdkmanager --install "ndk;28.2.13676358"
-
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
-
-          echo "===== ANDROID SDK ====="
-          echo "$ANDROID_HOME"
-
-          echo "===== ANDROID NDK ====="
-          ls -ld "$ANDROID_HOME/ndk/28.2.13676358"
 
       - name: Install build dependencies
         shell: bash
         run: |
           set -euxo pipefail
-
           sudo apt-get update
-
           sudo apt-get install -y \
-            python3 \
-            python3-pip \
-            python3-venv \
-            pkg-config \
-            build-essential \
-            cmake \
-            ninja-build \
-            git \
-            curl \
-            wget \
-            unzip \
-            xz-utils \
-            flex \
-            bison \
-            file \
-            libssl-dev \
-            zlib1g-dev \
-            libexpat1-dev \
-            libzstd-dev \
-            libxml2-dev \
-            libffi-dev
+            python3 python3-pip python3-venv \
+            pkg-config build-essential cmake ninja-build \
+            git curl wget unzip xz-utils flex bison file \
+            libssl-dev zlib1g-dev libexpat1-dev \
+            libzstd-dev libxml2-dev libffi-dev
 
           python3 -m pip install --user --upgrade \
             pip setuptools wheel
 
           python3 -m pip install --user \
-            meson \
-            mako \
-            packaging \
-            pyyaml \
-            ply
+            meson mako packaging pyyaml ply
 
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-          echo "===== TOOL VERSIONS ====="
           python3 --version
           cmake --version
           ninja --version
-          git --version
           meson --version
 
       - name: Build glslang 12.2.0
@@ -115,15 +77,10 @@ jobs:
             -DENABLE_HLSL=OFF
 
           cmake --build glslang-build --parallel 2
-
           sudo cmake --install glslang-build
 
           hash -r
-
-          echo "===== GLSLANG VERSION ====="
           /usr/local/bin/glslangValidator --version
-
-          echo "===== GLSLANG PATH ====="
           which glslangValidator
 
       - name: Download Mesa 26.3.1
@@ -136,49 +93,52 @@ jobs:
             -o mesa.tar.xz
 
           tar -xf mesa.tar.xz
-
           mv mesa-26.3.1 mesa-src
 
-          echo "===== MESA SOURCE ====="
-          ls -ld mesa-src
+          test -d mesa-src
 
-      - name: Download AHB V5 patch
-        if: ${{ inputs.apply_ahb_patch }}
-        uses: actions/download-artifact@v4
-        with:
-          name: mesa-ahb-v5-patched-source
-          repository: Rajaoprek/mesa-turnip-android-driver-v5
-          run-id: 44938010677
-          github-token: ${{ github.token }}
-
-      - name: Apply AHB V5 patch
-        if: ${{ inputs.apply_ahb_patch }}
+      - name: Apply AHB V5 safety patch
         shell: bash
         run: |
           set -euxo pipefail
 
-          echo "===== CHECK PATCH FILE ====="
-          ls -lah
+          python3 - <<'PY'
+          from pathlib import Path
 
-          test -f ahb-v5.patch
+          changes = [
+              (
+                  Path("mesa-src/src/freedreno/vulkan/tu_device.cc"),
+                  "      assert(handle->numFds > 0);",
+                  "      if (!handle || handle->numFds <= 0 || handle->data[0] < 0)\n"
+                  "         return VK_ERROR_INVALID_EXTERNAL_HANDLE;",
+              ),
+              (
+                  Path("mesa-src/src/vulkan/runtime/vk_android.c"),
+                  "   assert(handle && handle->numFds > 0);",
+                  "   if (!handle || handle->numFds <= 0 || handle->data[0] < 0)\n"
+                  "      return VK_ERROR_INVALID_EXTERNAL_HANDLE;",
+              ),
+          ]
 
-          cd mesa-src
+          for path, old, new in changes:
+              source = path.read_text()
 
-          git init
-          git add .
-          git -c user.name=Build \
-            -c user.email=build@example.com \
-            commit -m "Mesa base"
+              if source.count(old) != 1:
+                  raise SystemExit(
+                      f"PATCH FAILED: anchor absent or not unique: {path}"
+                  )
 
-          echo "===== PATCH VALIDATION ====="
-          git apply --check ../ahb-v5.patch
+              path.write_text(source.replace(old, new, 1))
+              print(f"Patched: {path}")
 
-          echo "===== APPLY PATCH ====="
-          git apply ../ahb-v5.patch
+          print("AHB V5 guard patch successfully applied.")
+          PY
 
-          echo "===== PATCH VERIFICATION ====="
-          git diff --check
-          git diff --stat
+          echo "===== VERIFY PATCH ====="
+
+          grep -n -A2 -B1 "handle->numFds <= 0" \
+            mesa-src/src/freedreno/vulkan/tu_device.cc \
+            mesa-src/src/vulkan/runtime/vk_android.c
 
       - name: Prepare Android ARM64 cross file
         shell: bash
@@ -207,7 +167,6 @@ jobs:
           cpp_args = ['-O2', '-fPIC']
           EOF
 
-          echo "===== CROSS FILE ====="
           cat android-aarch64.ini
 
       - name: Configure Mesa Turnip
@@ -217,10 +176,7 @@ jobs:
 
           export PATH="/usr/local/bin:$HOME/.local/bin:$PATH"
 
-          echo "===== GLSLANG ====="
           glslangValidator --version
-
-          echo "===== CONFIGURE MESA ====="
 
           meson setup build-android-aarch64 mesa-src \
             --cross-file android-aarch64.ini \
@@ -239,84 +195,41 @@ jobs:
             -Dcpp_rtti=false \
             -Dwrap_mode=nodownload
 
-      - name: Detect Ninja Turnip targets
+      - name: Build Mesa Turnip
         shell: bash
         run: |
           set -euxo pipefail
 
-          echo "===== SEARCH FREEDRENO VULKAN TARGET ====="
-
+          echo "===== AVAILABLE TARGETS ====="
           ninja -C build-android-aarch64 -t targets all \
-            | tee ninja-targets.txt
+            | grep -i -E "vulkan|freedreno" || true
 
-          echo "===== MATCH LIBVULKAN_FREEDRENO ====="
+          echo "===== BUILD ====="
+          ninja -C build-android-aarch64 -v
 
-          grep -i "libvulkan_freedreno" ninja-targets.txt || true
-
-          echo "===== MATCH FREEDRENO VULKAN ====="
-
-          grep -i "freedreno.*vulkan\|vulkan.*freedreno" \
-            ninja-targets.txt || true
-
-      - name: Build Turnip Vulkan driver
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          echo "===== FIND EXACT NINJA TARGET ====="
-
-          TARGET="$(
-            ninja -C build-android-aarch64 -t targets all \
-              | grep -E '(^|/)libvulkan_freedreno\.so:' \
-              | head -n 1 \
-              | cut -d: -f1
-          )"
-
-          if [ -z "$TARGET" ]; then
-            echo "ERROR: libvulkan_freedreno target not found"
-            echo "===== AVAILABLE VULKAN TARGETS ====="
-            ninja -C build-android-aarch64 -t targets all \
-              | grep -i vulkan || true
-
-            echo "===== AVAILABLE FREEDRENO TARGETS ====="
-            ninja -C build-android-aarch64 -t targets all \
-              | grep -i freedreno || true
-
-            exit 1
-          fi
-
-          echo "===== TARGET FOUND ====="
-          echo "$TARGET"
-
-          echo "===== BUILD DRIVER ====="
-          ninja -C build-android-aarch64 -v "$TARGET"
-
-      - name: Check driver output
+      - name: Locate and verify driver
         shell: bash
         run: |
           set -euxo pipefail
 
           DRIVER="$(find build-android-aarch64 \
             -type f -name libvulkan_freedreno.so \
-            | head -n 1)"
+            -print -quit)"
 
           test -n "$DRIVER"
           test -f "$DRIVER"
 
-          echo "===== DRIVER FILE ====="
+          echo "TURNIP_DRIVER=$DRIVER" >> "$GITHUB_ENV"
+
           ls -lh "$DRIVER"
-
-          echo "===== DRIVER TYPE ====="
           file "$DRIVER"
-
-          echo "===== DRIVER SHA256 ====="
           sha256sum "$DRIVER"
 
-      - name: Upload Turnip driver
+      - name: Upload patched Turnip driver
         uses: actions/upload-artifact@v4
         with:
-          name: Turnip-26.3.1-SCV38-Android10
-          path: build-android-aarch64/src/freedreno/vulkan/libvulkan_freedreno.so
+          name: Turnip-26.3.1-SCV38-Android10-AHB-V5
+          path: ${{ env.TURNIP_DRIVER }}
           if-no-files-found: error
           retention-days: 14
 
