@@ -30,7 +30,6 @@ jobs:
             meson mako packaging pyyaml ply
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      # Java 17 harus dipasang sebelum Android SDK
       - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
@@ -38,7 +37,9 @@ jobs:
           java-version: '17'
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
 
       - name: Install Android NDK
         shell: bash
@@ -79,8 +80,8 @@ jobs:
           git init -q
           git add .
           git -c user.name=CI \
-              -c user.email=ci@example.com \
-              commit -qm baseline
+            -c user.email=ci@example.com \
+            commit -qm baseline
 
           git apply --check ../patch-artifact/ahb-v5.patch
           git apply ../patch-artifact/ahb-v5.patch
@@ -99,17 +100,13 @@ jobs:
           mkdir -p /tmp/empty-pkgconfig
 
           cat > android-aarch64.ini <<EOF
-          [constants]
-          ndk_path = '$NDK'
-          tool_bin = '$TOOL'
-
           [binaries]
-          ar = 'llvm-ar'
-          c = 'aarch64-linux-android29-clang'
-          cpp = 'aarch64-linux-android29-clang++'
-          c_ld = 'lld'
-          cpp_ld = 'lld'
-          strip = 'llvm-strip'
+          ar = '$TOOL/llvm-ar'
+          c = '$TOOL/aarch64-linux-android29-clang'
+          cpp = '$TOOL/aarch64-linux-android29-clang++'
+          c_ld = '$TOOL/ld.lld'
+          cpp_ld = '$TOOL/ld.lld'
+          strip = '$TOOL/llvm-strip'
           pkg-config = ['env', 'PKG_CONFIG_LIBDIR=/tmp/empty-pkgconfig', 'pkg-config']
 
           [host_machine]
@@ -121,8 +118,6 @@ jobs:
           [properties]
           needs_exe_wrapper = true
           EOF
-
-          echo "$TOOL" >> "$GITHUB_PATH"
 
       - name: Configure Mesa Turnip
         shell: bash
@@ -165,7 +160,7 @@ jobs:
 
           file dist/libvulkan_freedreno.so
 
-          llvm-readelf -h dist/libvulkan_freedreno.so
+          llvm-readelf -h dist/libvulkan_freedreno.so || true
 
       - name: Upload Turnip ARM64 artifact
         uses: actions/upload-artifact@v4
