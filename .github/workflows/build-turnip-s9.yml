@@ -1,7 +1,13 @@
-name: Build Turnip AHB V5 - Galaxy S9
+name: Build Turnip 26.3.1 - Galaxy S9
 
 on:
   workflow_dispatch:
+    inputs:
+      apply_ahb_patch:
+        description: Apply AHB V5 patch
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -31,8 +37,16 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+
           sdkmanager --install "ndk;28.2.13676358"
+
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
+
+          echo "===== ANDROID SDK ====="
+          echo "$ANDROID_HOME"
+
+          echo "===== ANDROID NDK ====="
+          ls -ld "$ANDROID_HOME/ndk/28.2.13676358"
 
       - name: Install build dependencies
         shell: bash
@@ -42,18 +56,46 @@ jobs:
           sudo apt-get update
 
           sudo apt-get install -y \
-            python3 python3-pip python3-venv \
-            pkg-config build-essential cmake ninja-build \
-            git curl wget unzip xz-utils flex bison file \
-            libssl-dev zlib1g-dev libexpat1-dev \
-            libzstd-dev libxml2-dev libffi-dev
+            python3 \
+            python3-pip \
+            python3-venv \
+            pkg-config \
+            build-essential \
+            cmake \
+            ninja-build \
+            git \
+            curl \
+            wget \
+            unzip \
+            xz-utils \
+            flex \
+            bison \
+            file \
+            libssl-dev \
+            zlib1g-dev \
+            libexpat1-dev \
+            libzstd-dev \
+            libxml2-dev \
+            libffi-dev
 
-          python3 -m pip install --user --upgrade pip setuptools wheel
+          python3 -m pip install --user --upgrade \
+            pip setuptools wheel
 
           python3 -m pip install --user \
-            meson mako packaging pyyaml ply
+            meson \
+            mako \
+            packaging \
+            pyyaml \
+            ply
 
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+          echo "===== TOOL VERSIONS ====="
+          python3 --version
+          cmake --version
+          ninja --version
+          git --version
+          meson --version
 
       - name: Build glslang 12.2.0
         shell: bash
@@ -78,7 +120,10 @@ jobs:
 
           hash -r
 
-          glslangValidator --version
+          echo "===== GLSLANG VERSION ====="
+          /usr/local/bin/glslangValidator --version
+
+          echo "===== GLSLANG PATH ====="
           which glslangValidator
 
       - name: Download Mesa 26.3.1
@@ -86,14 +131,19 @@ jobs:
         run: |
           set -euxo pipefail
 
-          curl -L \
+          curl -fL \
             https://archive.mesa3d.org/mesa-26.3.1.tar.xz \
             -o mesa.tar.xz
 
           tar -xf mesa.tar.xz
+
           mv mesa-26.3.1 mesa-src
 
-      - name: Download AHB V5 patch artifact
+          echo "===== MESA SOURCE ====="
+          ls -ld mesa-src
+
+      - name: Download AHB V5 patch
+        if: ${{ inputs.apply_ahb_patch }}
         uses: actions/download-artifact@v4
         with:
           name: mesa-ahb-v5-patched-source
@@ -102,34 +152,46 @@ jobs:
           github-token: ${{ github.token }}
 
       - name: Apply AHB V5 patch
+        if: ${{ inputs.apply_ahb_patch }}
         shell: bash
         run: |
           set -euxo pipefail
 
-          ls -lh
+          echo "===== CHECK PATCH FILE ====="
+          ls -lah
+
           test -f ahb-v5.patch
+
+          echo "===== PATCH INFORMATION ====="
+          head -n 30 ahb-v5.patch
 
           cd mesa-src
 
           git init
           git add .
-          git -c user.name=Build -c user.email=build@example.com commit -m "Mesa base"
+          git -c user.name=Build \
+            -c user.email=build@example.com \
+            commit -m "Mesa base"
 
+          echo "===== PATCH VALIDATION ====="
           git apply --check ../ahb-v5.patch
+
+          echo "===== APPLY PATCH ====="
           git apply ../ahb-v5.patch
 
+          echo "===== PATCH VERIFICATION ====="
           git diff --check
           git diff --stat
 
-      - name: Prepare ARM64 cross file
+      - name: Prepare Android ARM64 cross file
         shell: bash
         run: |
           set -euxo pipefail
 
-          cat > arm64-android.txt <<EOF
+          cat > android-aarch64.ini <<EOF
           [binaries]
-          c = '$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang'
-          cpp = '$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang++'
+          c = '$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang'
+          cpp = '$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang++'
           ar = '$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar'
           strip = '$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip'
           pkgconfig = 'pkg-config'
@@ -148,7 +210,8 @@ jobs:
           cpp_args = ['-O2', '-fPIC']
           EOF
 
-          cat arm64-android.txt
+          echo "===== CROSS FILE ====="
+          cat android-aarch64.ini
 
       - name: Configure Mesa Turnip
         shell: bash
@@ -157,44 +220,59 @@ jobs:
 
           export PATH="/usr/local/bin:$HOME/.local/bin:$PATH"
 
+          echo "===== GLSLANG ====="
           glslangValidator --version
 
-          meson setup build mesa-src \
-            --cross-file arm64-android.txt \
+          echo "===== CONFIGURE MESA ====="
+
+          meson setup build-android-aarch64 mesa-src \
+            --cross-file android-aarch64.ini \
             --prefix=/usr \
             --libdir=lib \
             --buildtype=release \
             -Dplatforms=android \
+            -Dplatform-sdk-version=29 \
             -Dandroid-stub=true \
+            -Dandroid-libbacktrace=disabled \
+            -Degl=disabled \
             -Dgallium-drivers= \
             -Dvulkan-drivers=freedreno \
+            -Dfreedreno-kmds=kgsl \
+            -Dstrip=true \
+            -Dcpp_rtti=false \
             -Dwrap_mode=nodownload
 
-      - name: Build Turnip
+      - name: Build Turnip Vulkan driver
         shell: bash
         run: |
           set -euxo pipefail
 
-          ninja -C build -v libvulkan_freedreno.so
+          ninja -C build-android-aarch64 -v libvulkan_freedreno.so
 
-      - name: Check build output
+      - name: Check driver output
         shell: bash
         run: |
           set -euxo pipefail
 
-          DRIVER="$(find build -type f -name libvulkan_freedreno.so | head -n 1)"
+          DRIVER="$(find build-android-aarch64 -type f -name libvulkan_freedreno.so | head -n 1)"
 
           test -n "$DRIVER"
           test -f "$DRIVER"
 
+          echo "===== DRIVER FILE ====="
           ls -lh "$DRIVER"
+
+          echo "===== DRIVER TYPE ====="
           file "$DRIVER"
+
+          echo "===== DRIVER SHA256 ====="
+          sha256sum "$DRIVER"
 
       - name: Upload Turnip driver
         uses: actions/upload-artifact@v4
         with:
-          name: Turnip-26.3.1-AHB-V5-SCV38
-          path: build/src/freedreno/vulkan/libvulkan_freedreno.so
+          name: Turnip-26.3.1-SCV38-Android10
+          path: build-android-aarch64/src/freedreno/vulkan/libvulkan_freedreno.so
           if-no-files-found: error
           retention-days: 14
 
