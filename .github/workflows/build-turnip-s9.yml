@@ -162,9 +162,6 @@ jobs:
 
           test -f ahb-v5.patch
 
-          echo "===== PATCH INFORMATION ====="
-          head -n 30 ahb-v5.patch
-
           cd mesa-src
 
           git init
@@ -242,19 +239,66 @@ jobs:
             -Dcpp_rtti=false \
             -Dwrap_mode=nodownload
 
+      - name: Detect Ninja Turnip targets
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          echo "===== SEARCH FREEDRENO VULKAN TARGET ====="
+
+          ninja -C build-android-aarch64 -t targets all \
+            | tee ninja-targets.txt
+
+          echo "===== MATCH LIBVULKAN_FREEDRENO ====="
+
+          grep -i "libvulkan_freedreno" ninja-targets.txt || true
+
+          echo "===== MATCH FREEDRENO VULKAN ====="
+
+          grep -i "freedreno.*vulkan\|vulkan.*freedreno" \
+            ninja-targets.txt || true
+
       - name: Build Turnip Vulkan driver
         shell: bash
         run: |
           set -euxo pipefail
 
-          ninja -C build-android-aarch64 -v libvulkan_freedreno.so
+          echo "===== FIND EXACT NINJA TARGET ====="
+
+          TARGET="$(
+            ninja -C build-android-aarch64 -t targets all \
+              | grep -E '(^|/)libvulkan_freedreno\.so:' \
+              | head -n 1 \
+              | cut -d: -f1
+          )"
+
+          if [ -z "$TARGET" ]; then
+            echo "ERROR: libvulkan_freedreno target not found"
+            echo "===== AVAILABLE VULKAN TARGETS ====="
+            ninja -C build-android-aarch64 -t targets all \
+              | grep -i vulkan || true
+
+            echo "===== AVAILABLE FREEDRENO TARGETS ====="
+            ninja -C build-android-aarch64 -t targets all \
+              | grep -i freedreno || true
+
+            exit 1
+          fi
+
+          echo "===== TARGET FOUND ====="
+          echo "$TARGET"
+
+          echo "===== BUILD DRIVER ====="
+          ninja -C build-android-aarch64 -v "$TARGET"
 
       - name: Check driver output
         shell: bash
         run: |
           set -euxo pipefail
 
-          DRIVER="$(find build-android-aarch64 -type f -name libvulkan_freedreno.so | head -n 1)"
+          DRIVER="$(find build-android-aarch64 \
+            -type f -name libvulkan_freedreno.so \
+            | head -n 1)"
 
           test -n "$DRIVER"
           test -f "$DRIVER"
