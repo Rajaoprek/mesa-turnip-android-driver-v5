@@ -38,11 +38,17 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+
           sudo apt-get update
+
           sudo apt-get install -y \
             python3 python3-pip python3-venv \
             pkg-config build-essential cmake ninja-build \
-            git curl unzip xz-utils flex bison file
+            git curl wget unzip xz-utils flex bison file \
+            libssl-dev zlib1g-dev libexpat1-dev \
+            libzstd-dev libxml2-dev libffi-dev
+
+          python3 -m pip install --user --upgrade pip setuptools wheel
 
           python3 -m pip install --user \
             meson mako packaging pyyaml ply
@@ -71,6 +77,7 @@ jobs:
           sudo cmake --install glslang-build
 
           hash -r
+
           glslangValidator --version
           which glslangValidator
 
@@ -78,6 +85,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+
           curl -L \
             https://archive.mesa3d.org/mesa-26.3.1.tar.xz \
             -o mesa.tar.xz
@@ -99,8 +107,7 @@ jobs:
           set -euxo pipefail
 
           ls -lh
-
-          test -f mesa-ahb-v5.patch
+          test -f ahb-v5.patch
 
           cd mesa-src
 
@@ -108,8 +115,8 @@ jobs:
           git add .
           git -c user.name=Build -c user.email=build@example.com commit -m "Mesa base"
 
-          git apply --check ../mesa-ahb-v5.patch
-          git apply ../mesa-ahb-v5.patch
+          git apply --check ../ahb-v5.patch
+          git apply ../ahb-v5.patch
 
           git diff --check
           git diff --stat
@@ -161,28 +168,33 @@ jobs:
             -Dandroid-stub=true \
             -Dgallium-drivers= \
             -Dvulkan-drivers=freedreno \
-            -Dbuildtype=release \
             -Dwrap_mode=nodownload
 
       - name: Build Turnip
         shell: bash
         run: |
           set -euxo pipefail
+
           ninja -C build -v libvulkan_freedreno.so
 
       - name: Check build output
         shell: bash
         run: |
           set -euxo pipefail
-          find build -type f -name "libvulkan_freedreno.so" -ls
-          file "$(find build -type f -name libvulkan_freedreno.so | head -n 1)"
+
+          DRIVER="$(find build -type f -name libvulkan_freedreno.so | head -n 1)"
+
+          test -n "$DRIVER"
+          test -f "$DRIVER"
+
+          ls -lh "$DRIVER"
+          file "$DRIVER"
 
       - name: Upload Turnip driver
         uses: actions/upload-artifact@v4
         with:
-          name: Turnip-26.3.1-AHB-V5-SC V38
-          path: |
-            build/src/freedreno/vulkan/libvulkan_freedreno.so
+          name: Turnip-26.3.1-AHB-V5-SCV38
+          path: build/src/freedreno/vulkan/libvulkan_freedreno.so
           if-no-files-found: error
           retention-days: 14
 
